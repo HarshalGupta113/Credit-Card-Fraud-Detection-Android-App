@@ -1,7 +1,9 @@
 package com.example.anomalydetection
 
+import AnomalyDetector
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -10,6 +12,7 @@ import android.widget.Button
 import android.widget.TableLayout
 import android.widget.TableRow
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.github.mikephil.charting.charts.PieChart
 import com.github.mikephil.charting.data.PieData
@@ -18,173 +21,126 @@ import com.github.mikephil.charting.data.PieEntry
 import com.github.mikephil.charting.utils.ColorTemplate
 import com.opencsv.CSVReader
 import org.tensorflow.lite.Interpreter
+import java.io.BufferedReader
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var interpreter: Interpreter
+    private lateinit var anomalyDetector: AnomalyDetector
     private lateinit var resultTable: TableLayout
     private lateinit var pieChart: PieChart
-    private val PICK_CSV_FILE = 1
+    private val PICK_CSV_REQUEST_CODE = 1
 
-    private var fraudCount = 0
-    private var nonFraudCount = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-        // Initialize the UI elements
-        val pickFileButton: Button = findViewById(R.id.pickFileButton)
+        // Initialize UI elements
+        anomalyDetector = AnomalyDetector(this)
         resultTable = findViewById(R.id.resultTable)
         pieChart = findViewById(R.id.pieChart)
 
-        // Load the TensorFlow Lite model from the assets folder
-        val tfliteModel = loadModelFile()
-        interpreter = Interpreter(tfliteModel)
-
-        // Set up the button to pick the CSV file
+        // Set up the file picker button
+        val pickFileButton: Button = findViewById(R.id.pickFileButton)
         pickFileButton.setOnClickListener {
-            // Clear previous results
-            clearTable()
-            fraudCount = 0
-            nonFraudCount = 0
             pickCSVFile()
         }
-    }
-    private fun updateChart() {
-        if (fraudCount == 0 && nonFraudCount == 0) {
-            pieChart.visibility = View.GONE
-            return
-        }
-        val entries = listOf(
-            PieEntry(fraudCount.toFloat(), "Fraud"),
-            PieEntry(nonFraudCount.toFloat(), "Non-Fraud")
-        )
-        val dataSet = PieDataSet(entries, "Fraud Detection")
-        dataSet.colors = ColorTemplate.MATERIAL_COLORS.toList()
-        val data = PieData(dataSet)
 
-        pieChart.data = data
-        pieChart.setUsePercentValues(true)
-        pieChart.description.isEnabled = false
-        pieChart.isDrawHoleEnabled = true
-        pieChart.setDrawEntryLabels(true)
-        pieChart.legend.isEnabled = true
-        pieChart.invalidate() // Refresh chart
-
-        pieChart.visibility = View.VISIBLE
     }
 
-    // Function to allow the user to pick a CSV file
+    // Opens file picker to select a CSV file
     private fun pickCSVFile() {
-        val intent = Intent(Intent.ACTION_GET_CONTENT)
-        intent.type = "text/csv"
-        startActivityForResult(intent, PICK_CSV_FILE)
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "text/csv"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        startActivityForResult(intent, PICK_CSV_REQUEST_CODE)
     }
 
-    // Handle the file selection result
+    // Handle selected CSV file
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == PICK_CSV_FILE && resultCode == Activity.RESULT_OK) {
-            val csvUri: Uri? = data?.data
-            csvUri?.let {
-                processCSVFile(it)
+        if (requestCode == PICK_CSV_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
+            data?.data?.let { uri ->
+                processCSVFile(uri)
             }
         }
     }
 
-    // Load the TensorFlow Lite model from the assets folder
-    private fun loadModelFile(): ByteBuffer {
-        val assetFileDescriptor = assets.openFd("fraud_detection_model_v2.tflite")
-        val fileInputStream = assetFileDescriptor.createInputStream()
-        val fileChannel = fileInputStream.channel
-        val startOffset = assetFileDescriptor.startOffset
-        val declaredLength = assetFileDescriptor.declaredLength
-        return fileChannel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
-    }
-
-    // Clear previous table rows
-    private fun clearTable() {
-        // Keep the header row (index 0), clear others
-        resultTable.removeViews(1, resultTable.childCount - 1)
-    }
-
-    // Process the CSV file and perform predictions
+    // Process the CSV file and perform anomaly detection
     private fun processCSVFile(uri: Uri) {
         try {
-            val inputStream = contentResolver.openInputStream(uri)
-            val reader = CSVReader(InputStreamReader(inputStream))
-            val csvData = reader.readAll()
+            val inputStream: InputStream? = contentResolver.openInputStream(uri)
+            val reader = BufferedReader(InputStreamReader(inputStream))
 
-            Log.d("CSVData", "CSV Rows: ${csvData.size}")
+            // Parse the CSV and detect anomalies
+            var fraudCount = 0
+            var normalCount = 0
 
-            if (csvData.isNotEmpty()) {
-                csvData.removeAt(0)
-                resultTable.visibility = View.VISIBLE
+            reader.readLine() // Skip the header
+            reader.forEachLine { line ->
+                val values = line.split(",").map { it.toFloat() }.toFloatArray()
 
-                for (row in csvData) {
-                    Log.d("CSVRow", "Row: ${row.joinToString(", ")}")
+                // Perform anomaly detection
+                val isAnomaly = anomalyDetector.detectAnomalies(values)
+                addResultToTable(values[28], isAnomaly)
 
-                    if (row.size < 29) {
-                        Log.e("CSVRow", "Row does not have enough columns: ${row.joinToString(", ")}")
-                        continue
-                    }
-
-                    val inputBuffer = preprocessInput(row)
-                    val outputData = Array(1) { FloatArray(1) }
-
-                    interpreter.run(inputBuffer, outputData)
-                    Log.d("ModelOutput", "Raw output: ${outputData[0][0]}")
-
-
-                    val fraudStatus = if (outputData[0][0] > 1) "Fraud" else "Non-Fraud"
-                    val amount = row.last()
-                    if (fraudStatus == "Fraud") fraudCount++ else nonFraudCount++
-
-                    runOnUiThread {
-                        addRowToTable(amount, fraudStatus)
-                    }
-                }
-                updateChart()
+                // Count results for visualization
+                if (isAnomaly) fraudCount++ else normalCount++
             }
+
+            // Update PieChart with the results
+            updatePieChart(fraudCount, normalCount)
+            resultTable.visibility = View.VISIBLE
+            pieChart.visibility = View.VISIBLE
+
+            Toast.makeText(this, "CSV processed successfully", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Log.e("CSVError", "Error processing CSV: ${e.message}")
+            Toast.makeText(this, "Error processing CSV file", Toast.LENGTH_LONG).show()
             e.printStackTrace()
         }
     }
 
+    // Add each result to the TableLayout
+    private fun addResultToTable(amount: Float, isAnomaly: Boolean) {
+        val row = TableRow(this)
+        val amountText = TextView(this).apply { text = "$amount" }
+        val statusText = TextView(this).apply { text = if (isAnomaly) "Fraud" else "Normal" }
 
-    // Preprocess CSV row data before running inference
-    private fun preprocessInput(row: Array<String>): ByteBuffer {
-        val inputBuffer = ByteBuffer.allocateDirect(29 * 4)
-        inputBuffer.order(ByteOrder.nativeOrder())
-
-        for (i in 0..28) {
-            val value = row[i].toFloat()
-            inputBuffer.putFloat(value)
-        }
-
-        return inputBuffer
+        row.addView(amountText)
+        row.addView(statusText)
+        resultTable.addView(row)
     }
 
-    // Add a row to the result table
-    private fun addRowToTable(amount: String, fraudStatus: String) {
-        val newRow = TableRow(this)
-
-        val amountTextView = TextView(this)
-        amountTextView.text = amount
-        amountTextView.setPadding(8, 8, 8, 8)
-
-        val statusTextView = TextView(this)
-        statusTextView.text = fraudStatus
-        statusTextView.setPadding(8, 8, 8, 8)
-
-        newRow.addView(amountTextView)
-        newRow.addView(statusTextView)
-
-        resultTable.addView(newRow)
+    // Update PieChart with anomaly and normal counts
+    private fun updatePieChart(fraudCount: Int, normalCount: Int) {
+        val entries = listOf(
+            PieEntry(fraudCount.toFloat(), "Fraud"),
+            PieEntry(normalCount.toFloat(), "Normal")
+        )
+        val dataSet = PieDataSet(entries, "Transaction Results")
+        dataSet.colors = listOf(
+            Color.RED,   // Color for Fraud
+            Color.GREEN  // Color for Normal
+        )
+        val data = PieData(dataSet)
+        pieChart.data = data
+        pieChart.description.isEnabled = false // Remove description label
+        pieChart.isDrawHoleEnabled = true      // Enable hole in the center
+        pieChart.holeRadius = 45f              // Set the radius of the hole
+        pieChart.setTransparentCircleRadius(50f)
+        pieChart.setUsePercentValues(true)     // Display percentages
+        pieChart.setEntryLabelTextSize(12f)
+        pieChart.setBackgroundColor(Color.TRANSPARENT)
+        pieChart.invalidate() // Refresh chart
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        anomalyDetector.close()
+    }
+
 }
