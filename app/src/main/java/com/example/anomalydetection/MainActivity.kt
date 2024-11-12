@@ -3,6 +3,7 @@ package com.example.anomalydetection
 import AnomalyDetector
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
         resultTable = findViewById(R.id.resultTable)
         pieChart = findViewById(R.id.pieChart)
 
+        checkStoragePermissions()
         // Set up the file picker button
         val pickFileButton: Button = findViewById(R.id.pickFileButton)
         pickFileButton.setOnClickListener {
@@ -54,7 +56,7 @@ class MainActivity : AppCompatActivity() {
     // Opens file picker to select a CSV file
     private fun pickCSVFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            type = "text/csv"
+            type = "*/*"
             addCategory(Intent.CATEGORY_OPENABLE)
         }
         startActivityForResult(intent, PICK_CSV_REQUEST_CODE)
@@ -136,6 +138,11 @@ class MainActivity : AppCompatActivity() {
         pieChart.setEntryLabelTextSize(12f)
         pieChart.setBackgroundColor(Color.TRANSPARENT)
         pieChart.invalidate() // Refresh chart
+    }
+    private fun checkStoragePermissions() {
+        if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE), 100)
+        }
     }
 
     override fun onDestroy() {
